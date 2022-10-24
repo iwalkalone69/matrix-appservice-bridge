@@ -20,6 +20,7 @@ import { Bridge, Logger } from "..";
 import { Appservice as BotSdkAppservice, FunctionCallContext, METRIC_MATRIX_CLIENT_FAILED_FUNCTION_CALL,
     METRIC_MATRIX_CLIENT_SUCCESSFUL_FUNCTION_CALL } from "matrix-bot-sdk";
 import { getBridgeVersion } from "../utils/package-info";
+import { AsyncHook, createHook } from 'node:async_hooks';
 type CollectorFunction = () => Promise<void>|void;
 
 export interface BridgeGaugesCounts {
@@ -111,6 +112,7 @@ export class PrometheusMetrics {
     private counters: {[name: string]: PromClient.Counter<string>} = {};
     private collectors: CollectorFunction[] = [];
     private register: Registry;
+    private asyncHook?: AsyncHook;
     /**
      * Constructs a new Prometheus Metrics instance.
      * The metric `app_version` will be set here, so ensure that `getBridgeVersion`
@@ -125,6 +127,13 @@ export class PrometheusMetrics {
             labels: ["version"],
         });
         this.counters["app_version"].inc({ version: getBridgeVersion()});
+
+        this.addCounter({
+            name: "async_hook_fired",
+            help: "The async hooks that have fired.",
+            labels: ["type"],
+        });
+
         PromClient.collectDefaultMetrics({ register: this.register });
     }
 
@@ -414,5 +423,28 @@ export class PrometheusMetrics {
                 }
             },
         });
+    }
+
+    public close() {
+        this.asyncHook?.disable();
+    }
+
+    public registrCollectorAsyncHooks(types?: string[]) {
+        const registeredHooks = new Map<number, string>();
+        createHook({
+            init(asyncId, type) {
+                if (!types || type in types) {
+                    registeredHooks.set(asyncId, type);
+                }
+            },
+            after: (asyncId) => {
+                const type = registeredHooks.get(asyncId);
+                registeredHooks.delete(asyncId);
+                this.counters["async_hook_fired"].inc({ type });
+            },
+            destroy: (asyncId) => {
+                registeredHooks.delete(asyncId);
+            },
+        }).enable();
     }
 }
